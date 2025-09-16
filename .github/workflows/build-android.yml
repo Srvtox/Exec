@@ -30,7 +30,7 @@ jobs:
         -pie -fPIC -shared \
         -llog \
         -o libs/arm64-v8a/libtermexec.so \
-        term-exec.cpp
+        exec.cpp
 
     - name: Upload artifact
       uses: actions/upload-artifact@v3
