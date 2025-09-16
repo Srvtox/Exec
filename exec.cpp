@@ -26,8 +26,13 @@
 #include <unistd.h>
 #include <termios.h>
 #include <signal.h>
+#include <string.h>  // Added for strerror, strcmp, memset
+#include <android/log.h>
 
-typedef unsigned short char16_t;
+#define LOG_TAG "TermExec"
+
+// char16_t is a built-in type in C++11, remove the typedef
+// typedef unsigned short char16_t;
 
 class String8 {
 public:
@@ -41,7 +46,7 @@ public:
         }
     }
 
-    void set(const char16_t* o, size_t numChars) {
+    void set(const jchar* o, size_t numChars) {  // Changed from char16_t to jchar
         if (mString) {
             free(mString);
         }
@@ -90,9 +95,6 @@ static int throwIOException(JNIEnv *env, int errnum, const char *message)
 }
 
 static void closeNonstandardFileDescriptors() {
-    // Android uses shared memory to communicate between processes. The file descriptor is passed
-    // to child processes using the environment variable ANDROID_PROPERTY_WORKSPACE, which is of
-    // the form "properties_fd,sizeOfSharedMemory"
     int properties_fd = -1;
     char* properties_fd_string = getenv("ANDROID_PROPERTY_WORKSPACE");
     if (properties_fd_string != NULL) {
@@ -120,21 +122,16 @@ static void closeNonstandardFileDescriptors() {
 
 static int create_subprocess(JNIEnv *env, const char *cmd, char *const argv[], char *const envp[], int masterFd)
 {
-    // same size as Android 1.6 libc/unistd/ptsname_r.c
     char devname[64];
     pid_t pid;
 
     fcntl(masterFd, F_SETFD, FD_CLOEXEC);
 
-    // grantpt is unnecessary, because we already assume devpts by using /dev/ptmx
     if(unlockpt(masterFd)){
         throwIOException(env, errno, "trouble with /dev/ptmx");
         return -1;
     }
     memset(devname, 0, sizeof(devname));
-    // Early (Android 1.6) bionic versions of ptsname_r had a bug where they returned the buffer
-    // instead of 0 on success.  A compatible way of telling whether ptsname_r
-    // succeeded is to zero out errno and check it after the call
     errno = 0;
     int ptsResult = ptsname_r(masterFd, devname, sizeof(devname));
     if (ptsResult && errno) {
@@ -223,7 +220,9 @@ JNIEXPORT jint JNICALL Java_jackpal_androidterm_TermExec_createSubprocessInterna
             }
             tmp_8.set(str, env->GetStringLength(arg));
             env->ReleaseStringCritical(arg, str);
-            argv[i] = strdup(tmp_8.string());
+            // Replace strdup with malloc + strcpy
+            argv[i] = (char *)malloc(strlen(tmp_8.string()) + 1);
+            strcpy(argv[i], tmp_8.string());
         }
         argv[size] = NULL;
     }
@@ -245,7 +244,9 @@ JNIEXPORT jint JNICALL Java_jackpal_androidterm_TermExec_createSubprocessInterna
             }
             tmp_8.set(str, env->GetStringLength(var));
             env->ReleaseStringCritical(var, str);
-            envp[i] = strdup(tmp_8.string());
+            // Replace strdup with malloc + strcpy
+            envp[i] = (char *)malloc(strlen(tmp_8.string()) + 1);
+            strcpy(envp[i], tmp_8.string());
         }
         envp[size] = NULL;
     }
