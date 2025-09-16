@@ -1,0 +1,39 @@
+name: Android NDK Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up NDK
+      uses: android-actions/setup-android@v2
+      with:
+        ndk-version: '25.1.8937393'
+
+    - name: Compile C++ code
+      run: |
+        # ایجاد پوشه خروجی
+        mkdir -p libs/arm64-v8a
+        
+        # کامپایل برای معماری arm64-v8a
+        $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang++ \
+        -I $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include \
+        -I $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android \
+        -pie -fPIC -shared \
+        -llog \
+        -o libs/arm64-v8a/libtermexec.so \
+        term-exec.cpp
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: android-libs
+        path: libs/
