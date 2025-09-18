@@ -1,5 +1,5 @@
 #include <jni.h>
-#include <exec.h>
+#include "exec.h"
 #include <string>
 #include <vector>
 #include <unistd.h>
@@ -10,6 +10,7 @@
 #include <string.h>
 #include <android/log.h>
 
+#undef LOG_TAG
 #define LOG_TAG "ClangRunner"
 
 static std::vector<char*> buildArgv(const std::string& cmd, JNIEnv* env, jobjectArray args) {
