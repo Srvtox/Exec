@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <exec.h>
 #include <string>
 #include <vector>
 #include <unistd.h>
