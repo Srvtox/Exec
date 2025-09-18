@@ -1,272 +1,156 @@
-/*
- * Copyright (C) 2012 Steven Luo
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#include "exec.h"
-
-#include <sys/types.h>
-#include <sys/ioctl.h>
-#include <sys/wait.h>
-#include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <stdlib.h>
+#include <jni.h>
+#include <string>
+#include <vector>
 #include <unistd.h>
-#include <termios.h>
-#include <signal.h>
-#include <string.h>  // Added for strerror, strcmp, memset
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
 #include <android/log.h>
 
-#define LOG_TAG "TermExec"
+#define LOG_TAG "ClangRunner"
 
-// char16_t is a built-in type in C++11, remove the typedef
-// typedef unsigned short char16_t;
-
-class String8 {
-public:
-    String8() {
-        mString = 0;
-    }
-
-    ~String8() {
-        if (mString) {
-            free(mString);
+static std::vector<char*> buildArgv(const std::string& cmd, JNIEnv* env, jobjectArray args) {
+    std::vector<char*> argv;
+    // argv[0] = cmd
+    argv.push_back(strdup(cmd.c_str()));
+    if (args) {
+        jsize n = env->GetArrayLength(args);
+        for (jsize i = 0; i < n; ++i) {
+            jstring s = (jstring) env->GetObjectArrayElement(args, i);
+            const char* c = env->GetStringUTFChars(s, nullptr);
+            argv.push_back(strdup(c));
+            env->ReleaseStringUTFChars(s, c);
+            env->DeleteLocalRef(s);
         }
     }
-
-    void set(const jchar* o, size_t numChars) {  // Changed from char16_t to jchar
-        if (mString) {
-            free(mString);
-        }
-        mString = (char*) malloc(numChars + 1);
-        if (!mString) {
-            return;
-        }
-        for (size_t i = 0; i < numChars; i++) {
-            mString[i] = (char) o[i];
-        }
-        mString[numChars] = '\0';
-    }
-
-    const char* string() {
-        return mString;
-    }
-private:
-    char* mString;
-};
-
-static int throwOutOfMemoryError(JNIEnv *env, const char *message)
-{
-    jclass exClass;
-    const char *className = "java/lang/OutOfMemoryError";
-
-    exClass = env->FindClass(className);
-    return env->ThrowNew(exClass, message);
+    argv.push_back(nullptr);
+    return argv;
 }
 
-static int throwIOException(JNIEnv *env, int errnum, const char *message)
-{
-    __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "%s errno %s(%d)",
-        message, strerror(errno), errno);
-
-    if (errnum != 0) {
-        const char *s = strerror(errnum);
-        if (strcmp(s, "Unknown error") != 0)
-            message = s;
+static std::vector<std::string> buildEnvStrs(JNIEnv* env, jobjectArray envVars) {
+    std::vector<std::string> out;
+    if (!envVars) return out;
+    jsize n = env->GetArrayLength(envVars);
+    out.reserve(n);
+    for (jsize i = 0; i < n; ++i) {
+        jstring s = (jstring) env->GetObjectArrayElement(envVars, i);
+        const char* c = env->GetStringUTFChars(s, nullptr);
+        out.emplace_back(c);
+        env->ReleaseStringUTFChars(s, c);
+        env->DeleteLocalRef(s);
     }
-
-    jclass exClass;
-    const char *className = "java/io/IOException";
-
-    exClass = env->FindClass(className);
-    return env->ThrowNew(exClass, message);
+    return out;
 }
 
-static void closeNonstandardFileDescriptors() {
-    int properties_fd = -1;
-    char* properties_fd_string = getenv("ANDROID_PROPERTY_WORKSPACE");
-    if (properties_fd_string != NULL) {
-        properties_fd = atoi(properties_fd_string);
-    }
-    DIR *dir = opendir("/proc/self/fd");
-    if(dir != NULL) {
-        int dir_fd = dirfd(dir);
-
-        while(true) {
-            struct dirent *entry = readdir(dir);
-            if(entry == NULL) {
-                break;
-            }
-
-            int fd = atoi(entry->d_name);
-            if(fd > STDERR_FILENO && fd != dir_fd && fd != properties_fd) {
-                close(fd);
-            }
-        }
-
-        closedir(dir);
-    }
+// ساخت ExecResult(exitCode:int, output:String)
+static jobject makeExecResult(JNIEnv* env, int exitCode, const std::string& output) {
+    jclass cls = env->FindClass("com/example/clangrunner/ExecResult");
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "(ILjava/lang/String;)V");
+    jstring jout = env->NewStringUTF(output.c_str());
+    jobject obj = env->NewObject(cls, ctor, (jint)exitCode, jout);
+    env->DeleteLocalRef(jout);
+    return obj;
 }
 
-static int create_subprocess(JNIEnv *env, const char *cmd, char *const argv[], char *const envp[], int masterFd)
-{
-    char devname[64];
-    pid_t pid;
+extern "C"
+JNIEXPORT jobject JNICALL
+Java_com_example_clangrunner_NativeExec_run(
+        JNIEnv* env, jclass,
+        jstring jcmd, jobjectArray jargs, jobjectArray jenv, jstring jcwd) {
 
-    fcntl(masterFd, F_SETFD, FD_CLOEXEC);
+    // cmd
+    const char* cmd_c = env->GetStringUTFChars(jcmd, nullptr);
+    std::string cmd(cmd_c ? cmd_c : "");
+    env->ReleaseStringUTFChars(jcmd, cmd_c);
 
-    if(unlockpt(masterFd)){
-        throwIOException(env, errno, "trouble with /dev/ptmx");
-        return -1;
-    }
-    memset(devname, 0, sizeof(devname));
-    errno = 0;
-    int ptsResult = ptsname_r(masterFd, devname, sizeof(devname));
-    if (ptsResult && errno) {
-        throwIOException(env, errno, "ptsname_r returned error");
-        return -1;
-    }
-
-    pid = fork();
-    if(pid < 0) {
-        throwIOException(env, errno, "fork failed");
-        return -1;
+    // cwd
+    std::string cwd;
+    if (jcwd) {
+        const char* cwd_c = env->GetStringUTFChars(jcwd, nullptr);
+        cwd.assign(cwd_c ? cwd_c : "");
+        env->ReleaseStringUTFChars(jcwd, cwd_c);
     }
 
-    if(pid == 0){
-        int pts;
+    // args
+    auto argv = buildArgv(cmd, env, jargs);
 
-        setsid();
+    // env
+    auto envStrs = buildEnvStrs(env, jenv);
 
-        pts = open(devname, O_RDWR);
-        if(pts < 0) exit(-1);
+    // pipe برای گرفتن stdout+stderr
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        std::string err = std::string("pipe failed: ") + strerror(errno);
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "%s", err.c_str());
+        return makeExecResult(env, -1, err);
+    }
 
-        ioctl(pts, TIOCSCTTY, 0);
+    pid_t pid = fork();
+    if (pid < 0) {
+        std::string err = std::string("fork failed: ") + strerror(errno);
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "%s", err.c_str());
+        close(pipefd[0]); close(pipefd[1]);
+        return makeExecResult(env, -1, err);
+    }
 
-        dup2(pts, 0);
-        dup2(pts, 1);
-        dup2(pts, 2);
+    if (pid == 0) {
+        // child
+        // بستن سمت خواندن در child
+        close(pipefd[0]);
 
-        closeNonstandardFileDescriptors();
-
-        if (envp) {
-            for (; *envp; ++envp) {
-                putenv(*envp);
+        // تغییر فولدر کاری
+        if (!cwd.empty()) {
+            if (chdir(cwd.c_str()) != 0) {
+                // اگر نشد هم ادامه می‌دهیم ولی لاگ می‌کنیم
+                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "chdir failed: %s", strerror(errno));
             }
         }
 
-        execv(cmd, argv);
-        exit(-1);
-    } else {
-        return (int) pid;
-    }
-}
+        // هدایت stdout و stderr
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
 
-extern "C" {
-
-JNIEXPORT void JNICALL Java_jackpal_androidterm_TermExec_sendSignal(JNIEnv *env, jobject clazz,
-    jint procId, jint signal)
-{
-    kill(procId, signal);
-}
-
-JNIEXPORT jint JNICALL Java_jackpal_androidterm_TermExec_waitFor(JNIEnv *env, jclass clazz, jint procId) {
-    int status;
-    waitpid(procId, &status, 0);
-    int result = 0;
-    if (WIFEXITED(status)) {
-        result = WEXITSTATUS(status);
-    }
-    return result;
-}
-
-JNIEXPORT jint JNICALL Java_jackpal_androidterm_TermExec_createSubprocessInternal(JNIEnv *env, jclass clazz,
-    jstring cmd, jobjectArray args, jobjectArray envVars, jint masterFd)
-{
-    const jchar* str = cmd ? env->GetStringCritical(cmd, 0) : 0;
-    String8 cmd_8;
-    if (str) {
-        cmd_8.set(str, env->GetStringLength(cmd));
-        env->ReleaseStringCritical(cmd, str);
-    }
-
-    jsize size = args ? env->GetArrayLength(args) : 0;
-    char **argv = NULL;
-    String8 tmp_8;
-    if (size > 0) {
-        argv = (char **)malloc((size+1)*sizeof(char *));
-        if (!argv) {
-            throwOutOfMemoryError(env, "Couldn't allocate argv array");
-            return 0;
-        }
-        for (int i = 0; i < size; ++i) {
-            jstring arg = reinterpret_cast<jstring>(env->GetObjectArrayElement(args, i));
-            str = env->GetStringCritical(arg, 0);
-            if (!str) {
-                throwOutOfMemoryError(env, "Couldn't get argument from array");
-                return 0;
+        // تنظیم محیط
+        for (const auto& kv : envStrs) {
+            auto pos = kv.find('=');
+            if (pos != std::string::npos) {
+                std::string k = kv.substr(0, pos);
+                std::string v = kv.substr(pos + 1);
+                setenv(k.c_str(), v.c_str(), 1);
             }
-            tmp_8.set(str, env->GetStringLength(arg));
-            env->ReleaseStringCritical(arg, str);
-            // Replace strdup with malloc + strcpy
-            argv[i] = (char *)malloc(strlen(tmp_8.string()) + 1);
-            strcpy(argv[i], tmp_8.string());
         }
-        argv[size] = NULL;
+
+        // اجرای مستقیم باینری
+        execv(cmd.c_str(), argv.data());
+
+        // اگر برگشت یعنی خطا
+        // توجه: در child از JNI call نکنید
+        // خروجی خطا به همان pipe می‌رود
+        _exit(127);
     }
 
-    size = envVars ? env->GetArrayLength(envVars) : 0;
-    char **envp = NULL;
-    if (size > 0) {
-        envp = (char **)malloc((size+1)*sizeof(char *));
-        if (!envp) {
-            throwOutOfMemoryError(env, "Couldn't allocate envp array");
-            return 0;
-        }
-        for (int i = 0; i < size; ++i) {
-            jstring var = reinterpret_cast<jstring>(env->GetObjectArrayElement(envVars, i));
-            str = env->GetStringCritical(var, 0);
-            if (!str) {
-                throwOutOfMemoryError(env, "Couldn't get env var from array");
-                return 0;
-            }
-            tmp_8.set(str, env->GetStringLength(var));
-            env->ReleaseStringCritical(var, str);
-            // Replace strdup with malloc + strcpy
-            envp[i] = (char *)malloc(strlen(tmp_8.string()) + 1);
-            strcpy(envp[i], tmp_8.string());
-        }
-        envp[size] = NULL;
+    // parent
+    close(pipefd[1]);
+    // خواندن خروجی
+    std::string output;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        output.append(buf, buf + n);
+    }
+    close(pipefd[0]);
+
+    int status = 0;
+    int rc = waitpid(pid, &status, 0);
+    int exitCode = (rc < 0) ? -1 : (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+
+    // پاکسازی argv
+    for (auto* p : argv) {
+        if (p) free(p);
     }
 
-    int ptm = create_subprocess(env, cmd_8.string(), argv, envp, masterFd);
-
-    if (argv) {
-        for (char **tmp = argv; *tmp; ++tmp) {
-            free(*tmp);
-        }
-        free(argv);
-    }
-    if (envp) {
-        for (char **tmp = envp; *tmp; ++tmp) {
-            free(*tmp);
-        }
-        free(envp);
-    }
-
-    return ptm;
-}
-
+    return makeExecResult(env, exitCode, output);
 }
