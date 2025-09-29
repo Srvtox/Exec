@@ -59,12 +59,9 @@ jobs:
           git add gradlew gradlew.bat gradle/wrapper/*
           git commit -m "Add Gradle Wrapper [skip ci]" || echo "No changes to commit"
 
-      # 4. Push changes
-      - name: Push changes
-        run: |
-          # اگر می‌خواهید از GITHUB_TOKEN استفاده کنید:
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Srvtox/Exec.git
-
+   - name: Push changes with PAT
+  run: |
+    git push https://$PAT@github.com/Srvtox/Exec.git
           # یا اگر می‌خواهید از PAT استفاده کنید:
        # https://$PAT@github.com/Srvtox/Exec.git
 
