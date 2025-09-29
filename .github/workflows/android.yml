@@ -28,13 +28,45 @@ jobs:
             gradle wrapper --gradle-version 9.1
           fi
 
-      - name: Commit Gradle Wrapper
+      name: Commit Gradle Wrapper
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  commit-wrapper:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}  # یا از PAT استفاده کنید
+
+      # 2. Configure Git
+      - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 3. Add Gradle Wrapper files and commit
+      - name: Commit Gradle Wrapper
+        run: |
           git add gradlew gradlew.bat gradle/wrapper/*
           git commit -m "Add Gradle Wrapper [skip ci]" || echo "No changes to commit"
-          git push
+
+      # 4. Push changes
+      - name: Push changes
+        run: |
+          # اگر می‌خواهید از GITHUB_TOKEN استفاده کنید:
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Srvtox/Exec.git
+
+          # یا اگر می‌خواهید از PAT استفاده کنید:
+       # https://$PAT@github.com/Srvtox/Exec.git
 
   build:
     runs-on: ubuntu-latest
