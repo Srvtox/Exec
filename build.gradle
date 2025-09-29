@@ -4,7 +4,8 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.3'
+        // نسخه Android Gradle Plugin 9.1
+        classpath 'com.android.tools.build:gradle:9.1.0'
     }
 }
 
