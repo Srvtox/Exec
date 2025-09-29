@@ -20,14 +20,22 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # ساخت gradlew در صورت نبودن
+      - name: Generate Gradle Wrapper if missing
+        run: |
+          if [ ! -f gradlew ]; then
+            echo "gradlew not found, generating..."
+            gradle wrapper
+          fi
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build with Gradle
-        run: ./gradlew build
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-apk
+          name: app-debug-apk
           path: app/build/outputs/apk/debug/*.apk
