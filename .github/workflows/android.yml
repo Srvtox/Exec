@@ -46,14 +46,6 @@ jobs:
         run: |
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Srvtox/Exec.git
 
-      # اگر خواستی با PAT کار کنی، این مرحله رو فعال کن و بالایی رو کامنت بذار
-      # - name: Push Gradle Wrapper (PAT)
-      #   if: steps.commit-wrapper.outputs.committed == 'true'
-      #   env:
-      #     PAT: ${{ secrets.PAT }}
-      #   run: |
-      #     git push https://$PAT@github.com/Srvtox/Exec.git
-
   build:
     runs-on: ubuntu-latest
     needs: prepare-wrapper
