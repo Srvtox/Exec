@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   prepare-wrapper:
@@ -28,42 +29,30 @@ jobs:
             gradle wrapper --gradle-version 9.1
           fi
 
-      name: Commit Gradle Wrapper
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-jobs:
-  commit-wrapper:
-    runs-on: ubuntu-latest
-
-    steps:
-      # 1. Checkout repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}  # یا از PAT استفاده کنید
-
-      # 2. Configure Git
-      - name: Configure Git
+      - name: Commit Gradle Wrapper
+        id: commit-wrapper
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add gradlew gradlew.bat gradle/wrapper/* || true
+          if git commit -m "Add Gradle Wrapper [skip ci]"; then
+            echo "committed=true" >> $GITHUB_OUTPUT
+          else
+            echo "committed=false" >> $GITHUB_OUTPUT
+          fi
 
-      # 3. Add Gradle Wrapper files and commit
-      - name: Commit Gradle Wrapper
+      - name: Push Gradle Wrapper (GITHUB_TOKEN)
+        if: steps.commit-wrapper.outputs.committed == 'true'
         run: |
-          git add gradlew gradlew.bat gradle/wrapper/*
-          git commit -m "Add Gradle Wrapper [skip ci]" || echo "No changes to commit"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Srvtox/Exec.git
 
-   - name: Push changes with PAT
-  run: |
-    git push https://$PAT@github.com/Srvtox/Exec.git
-          # یا اگر می‌خواهید از PAT استفاده کنید:
-       # https://$PAT@github.com/Srvtox/Exec.git
+      # اگر خواستی با PAT کار کنی، این مرحله رو فعال کن و بالایی رو کامنت بذار
+      # - name: Push Gradle Wrapper (PAT)
+      #   if: steps.commit-wrapper.outputs.committed == 'true'
+      #   env:
+      #     PAT: ${{ secrets.PAT }}
+      #   run: |
+      #     git push https://$PAT@github.com/Srvtox/Exec.git
 
   build:
     runs-on: ubuntu-latest
@@ -94,11 +83,20 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
 
       - name: Commit APK to repository
+        id: commit-apk
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p release
           cp app/build/outputs/apk/debug/*.apk release/
-          git add release/*.apk
-          git commit -m "Add new debug APK [skip ci]" || echo "No changes to commit"
-          git push
+          git add release/*.apk || true
+          if git commit -m "Add new debug APK [skip ci]"; then
+            echo "committed=true" >> $GITHUB_OUTPUT
+          else
+            echo "committed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push APK (GITHUB_TOKEN)
+        if: steps.commit-apk.outputs.committed == 'true'
+        run: |
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Srvtox/Exec.git
