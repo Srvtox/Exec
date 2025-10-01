@@ -1,3 +1,5 @@
+package com.example.nativeexec;
+
 public class NativeExec {
 
     static {
