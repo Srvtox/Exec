@@ -1,14 +1,17 @@
-package com.example.nativeexec;
-
 public class NativeExec {
-    public static class ExecResult {
-        public int exitCode;
-        public String output;
+
+    static {
+        System.loadLibrary("nativeexec");
     }
 
-    private native ExecResult nativeExecCommand(String cmd);
+    public native ExecResult nativeExecCommand(String command);
 
     public ExecResult exec(String cmd) {
         return nativeExecCommand(cmd);
+    }
+
+    public static class ExecResult {
+        public int exitCode;
+        public String output;
     }
 }
