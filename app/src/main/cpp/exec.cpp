@@ -58,7 +58,7 @@ static jobject makeExecResult(JNIEnv* env, int exitCode, const std::string& outp
 
 extern "C"
 JNIEXPORT jobject JNICALL
-Java_com_example_clangrunner_NativeExec_run(
+Java_com_example_clangrunner_NativeExec_nativeExecCommand(
         JNIEnv* env, jclass,
         jstring jcmd, jobjectArray jargs, jobjectArray jenv, jstring jcwd) {
 

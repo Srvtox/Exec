@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-JNIEXPORT jobject JNICALL Java_com_example_clangrunner_NativeExec_run
+JNIEXPORT jobject JNICALL Java_com_example_clangrunner_NativeExec_nativeExecCommand
   (JNIEnv *, jclass, jstring, jobjectArray, jobjectArray, jstring);
 
 #ifdef __cplusplus
