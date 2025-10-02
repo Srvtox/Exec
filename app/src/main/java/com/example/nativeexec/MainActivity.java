@@ -23,7 +23,13 @@ public class MainActivity extends AppCompatActivity {
 
         runBtn.setOnClickListener(v -> {
             String cmd = input.getText().toString();
-            NativeExec.ExecResult res = nativeExec.exec(cmd);
+            NativeExec exec = new NativeExec();
+ExecResult result = exec.nativeExecCommand(
+    "/system/bin/ls",
+    new String[]{"-l", "/sdcard"},
+    null,
+    "/"
+);
             output.setText("Exit: " + res.exitCode + "\nOutput:\n" + res.output);
         });
     }
