@@ -36,7 +36,7 @@ public class MainActivity extends AppCompatActivity {
                 System.arraycopy(parts, 1, args, 0, args.length);
             }
 
-            ExecResult res = nativeExec.nativeExecCommand(command, args, null, "/");
+            NativeExec.ExecResult res = nativeExec.nativeExecCommand(command, args, null, "/");
             output.setText("Exit: " + res.exitCode + "\nOutput:\n" + res.output);
         });
     }
