@@ -48,7 +48,7 @@ static std::vector<std::string> buildEnvStrs(JNIEnv* env, jobjectArray envVars) 
 
 // ساخت ExecResult(exitCode:int, output:String)
 static jobject makeExecResult(JNIEnv* env, int exitCode, const std::string& output) {
-    jclass cls = env->FindClass("com/example/clangrunner/ExecResult");
+    jclass cls = env->FindClass("com/example/nativeexec/ExecResult");
     jmethodID ctor = env->GetMethodID(cls, "<init>", "(ILjava/lang/String;)V");
     jstring jout = env->NewStringUTF(output.c_str());
     jobject obj = env->NewObject(cls, ctor, (jint)exitCode, jout);
