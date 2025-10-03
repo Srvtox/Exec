@@ -1,6 +1,6 @@
 package com.example.nativeexec;
 
-public static class ExecResult {
+public class ExecResult {
     public int exitCode;
     public String output;
 
