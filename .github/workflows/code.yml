@@ -28,6 +28,58 @@ jobs:
 
       - name: Prepare Download Directory
         run: mkdir -p downloads
+      - name: Install WGCF
+        run: |
+          wget -q https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_2.2.31_linux_amd64 -O wgcf
+          chmod +x wgcf
+          sudo mv wgcf /usr/local/bin/
+
+          wgcf register --accept-tos
+          wgcf generate
+
+      # ==========================================
+      # Install WireProxy
+      # ==========================================
+      - name: Install WireProxy
+        run: |
+          wget -q https://github.com/pufferffish/wireproxy/releases/latest/download/wireproxy_linux_amd64.tar.gz -O wireproxy.tar.gz
+          
+          tar -xzf wireproxy.tar.gz
+          
+          chmod +x wireproxy
+          sudo mv wireproxy /usr/local/bin/
+
+          wireproxy --version || echo "WireProxy installed!"
+      # ==========================================
+      # Start WARP Proxy
+      # ==========================================
+      - name: Start WARP
+        run: |
+          mkdir -p warp
+
+          cat > warp/config.ini << EOF
+          [Interface]
+          PrivateKey = $(grep PrivateKey wgcf-profile.conf | awk '{print $3}')
+          Address = 172.16.0.2/32
+          DNS = 1.1.1.1
+          MTU = 1280
+
+          [Peer]
+          PublicKey = $(grep PublicKey wgcf-profile.conf | awk '{print $3}')
+          Endpoint = $(grep Endpoint wgcf-profile.conf | awk '{print $3}')
+          AllowedIPs = 0.0.0.0/0
+
+          [Socks5]
+          BindAddress = 127.0.0.1:1080
+          EOF
+
+          nohup wireproxy -c warp/config.ini &
+
+          sleep 6
+
+          echo "Testing WARP IP:"
+          curl --socks5 127.0.0.1:1080 https://ipinfo.io
+
 
       - name: Mega Download
         run: |
