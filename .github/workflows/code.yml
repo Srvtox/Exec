@@ -80,6 +80,22 @@ jobs:
 
           echo "=== Testing WARP IP ==="
           curl --socks5-hostname 127.0.0.1:1080 https://ipinfo.io || true
+      - name: Install Privoxy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y privoxy
+
+      - name: Configure Privoxy
+        run: |
+          echo 'listen-address  127.0.0.1:8118' | sudo tee /etc/privoxy/config
+          echo 'forward-socks5t   /   127.0.0.1:1080 .' | sudo tee -a /etc/privoxy/config
+          sudo systemctl restart privoxy
+          sleep 3
+
+      - name: Test HTTP proxy over WARP
+        run: |
+          curl -x http://127.0.0.1:8118 https://ipinfo.io
+
 
       - name: Download file via WARP
         run: |
@@ -89,7 +105,8 @@ jobs:
           echo "Downloading: $URL"
 
           aria2c \
-            --all-proxy="socks5://127.0.0.1:1080" \
+            --http-proxy="http://127.0.0.1:8118" \
+            --https-proxy="http://127.0.0.1:8118" \
             --check-certificate=true \
             --continue=true \
             --max-connection-per-server=16 \
