@@ -2,8 +2,8 @@ name: Check V2Ray Configs
 
 on:
   schedule:
-    - cron: '*/180 * * * *'
-  workflow_dispatch:
+    - cron: '*/180 * * * *'   # هر 3 ساعت یکبار اجرا شود
+  workflow_dispatch:          # قابلیت اجرای دستی
 
 permissions:
   contents: write
@@ -35,7 +35,6 @@ jobs:
 
       - name: Run health check script
         env:
-          SUBSCRIPTIONS: ${{ secrets.SUBSCRIPTION_URLS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - << 'EOF'
@@ -45,33 +44,28 @@ jobs:
           import tempfile
 
           # ----------------------------- Configuration ----------------------------
-          SUBSCRIPTION_URLS = os.environ.get("SUBSCRIPTIONS", "").strip().splitlines()
-          if not SUBSCRIPTION_URLS:
-              print("No subscription URLs provided.")
-              sys.exit(1)
-
-          MAX_CONFIGS_TO_KEEP = 10
-          TEST_TIMEOUT = 5
-          TEST_URL = "http://www.gstatic.com/generate_204"
-          PARALLEL_WORKERS = 5
+          # آدرس فایل حاوی لیست کانفیگ‌ها
+          CONFIG_SOURCE_URL = "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Vless.txt"
+          MAX_CONFIGS_TO_KEEP = 10          # تعداد نهایی کانفیگ‌های سریع
+          TEST_TIMEOUT = 5                  # ثانیه برای تست هر پروکسی
+          TEST_URL = "http://www.gstatic.com/generate_204"   # برای تست latency
+          PARALLEL_WORKERS = 5              # تعداد تست همزمان
 
           # ----------------------------- Helper Functions -------------------------
-          def fetch_subscription(url):
+          def fetch_configs(url):
+              """دریافت لیست کانفیگ‌ها از فایل خام"""
               try:
                   import requests
-                  resp = requests.get(url, timeout=10)
+                  resp = requests.get(url, timeout=30)
                   if resp.status_code != 200:
+                      print(f"Failed to fetch configs: {resp.status_code}")
                       return []
                   content = resp.text.strip()
-                  if re.match(r'^[A-Za-z0-9+/=]+$', content) and len(content) % 4 == 0:
-                      try:
-                          content = base64.b64decode(content).decode('utf-8')
-                      except:
-                          pass
                   lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+                  print(f"Fetched {len(lines)} config lines")
                   return lines
               except Exception as e:
-                  print(f"Error fetching {url}: {e}")
+                  print(f"Error fetching configs: {e}")
                   return []
 
           def parse_v2ray_link(link):
@@ -91,7 +85,6 @@ jobs:
                   if len(user_host) != 2:
                       return None
                   uuid, host_port = user_host[0], user_host[1]
-                  # جدا کردن host و port با مدیریت کاراکترهای اضافی
                   host_port_parts = host_port.split(':')
                   if len(host_port_parts) < 2:
                       return None
@@ -240,18 +233,22 @@ jobs:
                   os.unlink(conf_path)
 
           # ----------------------------- Main Workflow ----------------------------
+          # دریافت لیست کانفیگ‌ها از فایل Vless.txt
+          config_links = fetch_configs(CONFIG_SOURCE_URL)
+          if not config_links:
+              print("No config links found.")
+              sys.exit(1)
+
+          # پارس کردن لینک‌ها
           all_configs = []
-          for sub_url in SUBSCRIPTION_URLS:
-              print(f"Fetching {sub_url}")
-              links = fetch_subscription(sub_url)
-              for link in links:
-                  cfg = parse_v2ray_link(link)
-                  if cfg:
-                      cfg['source_url'] = sub_url
-                      all_configs.append(cfg)
+          for link in config_links:
+              cfg = parse_v2ray_link(link)
+              if cfg:
+                  all_configs.append(cfg)
 
           print(f"Total configs parsed: {len(all_configs)}")
 
+          # تست موازی
           active = []
           with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
               futures = []
@@ -263,6 +260,7 @@ jobs:
                   if res and res['success']:
                       active.append(res)
 
+          # مرتب‌سازی بر اساس latency و نگهداری سریع‌ترین‌ها
           active.sort(key=lambda x: x['latency'])
           fastest = active[:MAX_CONFIGS_TO_KEEP]
 
@@ -270,11 +268,11 @@ jobs:
 
           output_configs = [item['proxy'] for item in fastest]
 
-          # JSON
+          # 1. JSON
           with open('active_configs.json', 'w') as f:
               json.dump(output_configs, f, indent=2)
 
-          # Clash
+          # 2. Clash
           clash_proxies = []
           for p in output_configs:
               if p['protocol'] == 'vmess':
@@ -322,7 +320,7 @@ jobs:
           with open('clash.yaml', 'w') as f:
               yaml.dump(clash_config, f, allow_unicode=True, sort_keys=False)
 
-          # Singbox
+          # 3. Singbox
           singbox_outbounds = []
           for p in output_configs:
               if p['protocol'] == 'vmess':
@@ -359,9 +357,10 @@ jobs:
           with open('singbox.json', 'w') as f:
               json.dump(singbox_config, f, indent=2)
 
-          # README.md
+          # 4. به‌روزرسانی README.md با جدول مارک‌داون
           readme_content = "# V2Ray Active Configs\n\n"
           readme_content += "Last update: " + time.strftime("%Y-%m-%d %H:%M:%S UTC") + "\n\n"
+          readme_content += f"Source: [Vless.txt]({CONFIG_SOURCE_URL})\n\n"
           if fastest:
               readme_content += "| Name | Protocol | Address | Latency (ms) |\n"
               readme_content += "|------|----------|---------|--------------|\n"
@@ -379,7 +378,7 @@ jobs:
           with open('README.md', 'w') as f:
               f.write(readme_content)
 
-          # Commit and push using GITHUB_TOKEN
+          # Commit و Push
           repo_url = f"https://x-access-token:{os.environ['GITHUB_TOKEN']}@github.com/{os.environ['GITHUB_REPOSITORY']}.git"
           os.system('git config user.name "github-actions[bot]"')
           os.system('git config user.email "github-actions[bot]@users.noreply.github.com"')
