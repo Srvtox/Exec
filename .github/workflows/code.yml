@@ -97,31 +97,29 @@ jobs:
           curl -x http://127.0.0.1:8118 https://ipinfo.io
 
 
-      - name: Download file via WARP
+      - name: Download file via WARP using curl
         run: |
           cd downloads
           URL="${{ github.event.inputs.file_url }}"
 
           echo "Downloading: $URL"
 
-          aria2c \
-            --http-proxy="http://127.0.0.1:8118" \
-            --https-proxy="http://127.0.0.1:8118" \
-            --check-certificate=true \
-            --continue=true \
-            --max-connection-per-server=16 \
-            --split=16 \
-            --min-split-size=5M \
-            --remote-time=true \
-            --summary-interval=15 \
-            --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" \
-            --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-            --header="Accept-Language: en-US,en;q=0.9" \
-            --header="Referer: https://sourceforge.net/" \
-            "$URL"
+          curl -L \
+            --fail \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --proxy http://127.0.0.1:8118 \
+            -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
+            -H "Accept-Language: en-US,en;q=0.9" \
+            -H "Upgrade-Insecure-Requests: 1" \
+            -e "https://sourceforge.net/" \
+            -OJ "$URL"
 
           echo "=== Downloaded files ==="
           ls -lh
+
 
       - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
