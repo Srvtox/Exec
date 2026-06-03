@@ -1,122 +1,55 @@
-name: Download and Upload Large File to Release
+name: Pro Download and Release
 
 on:
   workflow_dispatch:
     inputs:
-      download_type:
-        description: "Type of download: http (direct link) or torrent (magnet/.torrent)"
-        required: true
-        type: choice
-        options:
-          - http
-          - torrent
       file_url:
-        description: "URL of the file (direct link OR magnet/torrent URL)"
+        description: "URL of the file (Direct link, SourceForge, or Magnet)"
         required: true
         type: string
       release_tag:
-        description: "Optional: custom release tag (default: auto-generated)"
-        required: false
-        type: string
-      release_name:
-        description: "Optional: custom release name (default: auto-generated)"
-        required: false
+        description: "Custom release tag"
+        default: "v1.0"
         type: string
 
 jobs:
   download-and-release:
     runs-on: ubuntu-latest
+    # این بخش برای اینه که گیت‌هاب اجازه داشته باشه فایل رو آپلود کنه
+    permissions:
+      contents: write
 
     steps:
-      - name: Show inputs
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install aria2
+        run: sudo apt-get update && sudo apt-get install -y aria2
+
+      - name: Prepare Download Directory
+        run: mkdir -p downloads
+
+      - name: Mega Download
         run: |
-          echo "Download type: ${{ github.event.inputs.download_type }}"
-          echo "File URL: ${{ github.event.inputs.file_url }}"
-          echo "Release tag (raw): ${{ github.event.inputs.release_tag }}"
-          echo "Release name (raw): ${{ github.event.inputs.release_name }}"
+          cd downloads
+          # استفاده از aria2c برای همه نوع لینکی (HTTP, Torrent, Magnet)
+          # این ابزار هوشمندانه اسم فایل رو از هدرهای سایت استخراج می‌کنه
+          aria2c --continue=true \
+                 --max-connection-per-server=16 \
+                 --split=16 \
+                 --remote-time=true \
+                 --summary-interval=15 \
+                 "${{ github.event.inputs.file_url }}"
+          
+          echo "ببینیم چی دانلود شده:"
+          ls -lh
 
-      - name: Prepare workspace
-        run: |
-          mkdir -p downloads
-          echo "DOWNLOAD_DIR=$PWD/downloads" >> $GITHUB_ENV
-
-      - name: Install aria2 for torrent downloads
-        if: ${{ github.event.inputs.download_type == 'torrent' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y aria2
-
-      - name: Download via HTTP/HTTPS
-        if: ${{ github.event.inputs.download_type == 'http' }}
-        run: |
-          cd "$DOWNLOAD_DIR"
-          echo "Downloading via HTTP from: ${{ github.event.inputs.file_url }}"
-          filename=$(basename "${{ github.event.inputs.file_url }}")
-
-          # اگر اسم ته لینک شلخته بود، یه اسم پیش‌فرض می‌ذاریم
-          if [ -z "$filename" ] || [ "$filename" = "/" ]; then
-            filename="downloaded_file"
-          fi
-
-          curl -L "${{ github.event.inputs.file_url }}" -o "$filename"
-          echo "Downloaded file: $filename"
-
-      - name: Download via Torrent/Magnet (aria2)
-        if: ${{ github.event.inputs.download_type == 'torrent' }}
-        run: |
-          cd "$DOWNLOAD_DIR"
-          url="${{ github.event.inputs.file_url }}"
-          echo "Downloading via Torrent/Magnet from: $url"
-
-          # aria2c تنظیم برای تورنت‌های بزرگ
-          aria2c \
-            --continue=true \
-            --max-connection-per-server=16 \
-            --split=16 \
-            --min-split-size=5M \
-            --summary-interval=60 \
-            --check-integrity=true \
-            --seed-time=0 \
-            "$url"
-
-          echo "Torrent/Magnet download finished."
-          echo "Downloaded files:"
-          ls -R .
-
-      - name: List downloaded files
-        run: |
-          echo "Files in $DOWNLOAD_DIR:"
-          ls -R "$DOWNLOAD_DIR"
-
-      - name: Determine release tag and name
-        id: meta
-        run: |
-          # Tag
-          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
-            TAG="${{ github.event.inputs.release_tag }}"
-          else
-            TAG="download-${GITHUB_RUN_ID}"
-          fi
-
-          # Name
-          if [ -n "${{ github.event.inputs.release_name }}" ]; then
-            NAME="${{ github.event.inputs.release_name }}"
-          else
-            NAME="Downloaded Assets #${GITHUB_RUN_ID}"
-          fi
-
-          echo "TAG=$TAG" >> $GITHUB_ENV
-          echo "NAME=$NAME" >> $GITHUB_ENV
-
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "name=$NAME" >> $GITHUB_OUTPUT
-
-      - name: Create Release and upload assets
-        uses: softprops/action-gh-release@v1
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.name }}
-          files: |
-            ${{ env.DOWNLOAD_DIR }}/**
+          tag_name: ${{ github.event.inputs.release_tag }}-${{ github.run_id }}
+          name: "Release ${{ github.event.inputs.release_tag }} (Build ${{ github.run_number }})"
+          # اینجا میگیم هر چی توی پوشه دانلود هست رو بردار و آپلود کن
+          files: downloads/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
