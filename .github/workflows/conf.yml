@@ -35,16 +35,15 @@ jobs:
 
       - name: Run health check script
         env:
-          PYTHONUNBUFFERED: 1        # <-- غیرفعال کردن بافر خروجی پایتون
+          PYTHONUNBUFFERED: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - << 'EOF'
-          import os, sys, re, base64, json, yaml, time, subprocess
+          import os, sys, re, base64, json, yaml, time, subprocess, random
           from concurrent.futures import ThreadPoolExecutor, as_completed
           from urllib.parse import parse_qs
           import tempfile
 
-          # اطمینان از real-time خروجی (تکمیل‌کننده PYTHONUNBUFFERED)
           sys.stdout.reconfigure(line_buffering=True)
 
           # ----------------------------- Configuration ----------------------------
@@ -52,8 +51,10 @@ jobs:
           MAX_CONFIGS_TO_KEEP = 10
           TEST_TIMEOUT = 5
           TEST_URL = "http://www.gstatic.com/generate_204"
-          PARALLEL_WORKERS = 5
+          PARALLEL_WORKERS = 10
+          MAX_CONFIGS_TO_TEST = 200   # حداکثر 200 کانفیگ تصادفی
 
+          # ----------------------------- Helper Functions -------------------------
           def fetch_configs(url):
               print(f"[1/5] Fetching configs from {url} ...")
               try:
@@ -64,7 +65,7 @@ jobs:
                       return []
                   content = resp.text.strip()
                   lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
-                  print(f"  ✓ Fetched {len(lines)} config links")
+                  print(f"  ✓ Fetched {len(lines)} total config links")
                   return lines
               except Exception as e:
                   print(f"  ✗ Error: {e}")
@@ -227,7 +228,7 @@ jobs:
                       return {"proxy": proxy, "latency": round(elapsed * 1000), "success": True}
                   else:
                       return None
-              except Exception as e:
+              except Exception:
                   return None
               finally:
                   proc.terminate()
@@ -240,43 +241,59 @@ jobs:
               print("No config links found. Exiting.")
               sys.exit(1)
 
+          # محدود کردن تعداد تصادفی
+          original_count = len(config_links)
+          if original_count > MAX_CONFIGS_TO_TEST:
+              config_links = random.sample(config_links, MAX_CONFIGS_TO_TEST)
+              print(f"  Randomly selected {MAX_CONFIGS_TO_TEST} configs out of {original_count} to test.")
+          else:
+              print(f"  All {original_count} configs will be tested.")
+
           print("[2/5] Parsing config links...")
           all_configs = []
           for idx, link in enumerate(config_links, 1):
               cfg = parse_v2ray_link(link)
               if cfg:
                   all_configs.append(cfg)
-                  print(f"  ✓ Parsed {cfg['protocol']}: {cfg.get('name', cfg['address'])}")
+                  if idx <= 10:
+                      print(f"  ✓ Parsed {cfg['protocol']}: {cfg.get('name', cfg['address'])}")
               else:
-                  print(f"  ✗ Failed to parse: {link[:50]}...")
+                  if idx <= 10:
+                      print(f"  ✗ Failed to parse: {link[:50]}...")
           print(f"  Total valid configs: {len(all_configs)}")
+
+          if not all_configs:
+              print("No valid configs to test. Exiting.")
+              sys.exit(1)
 
           print(f"[3/5] Testing {len(all_configs)} configs in parallel (workers={PARALLEL_WORKERS})...")
           active = []
           with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-              futures = []
+              futures = {}
               for i, cfg in enumerate(all_configs):
                   socks_port = 10800 + (i % 1000)
-                  futures.append(executor.submit(test_proxy_with_xray, cfg, socks_port))
+                  future = executor.submit(test_proxy_with_xray, cfg, socks_port)
+                  futures[future] = cfg
               completed = 0
-              for fut in as_completed(futures):
+              for future in as_completed(futures):
                   completed += 1
-                  res = fut.result()
+                  res = future.result()
                   if res and res['success']:
                       active.append(res)
                       print(f"  [{completed}/{len(all_configs)}] ✓ ACTIVE - {res['proxy'].get('name', res['proxy']['address'])} ({res['latency']} ms)")
                   else:
-                      print(f"  [{completed}/{len(all_configs)}] ✗ INACTIVE")
+                      if completed % 50 == 0:
+                          print(f"  [{completed}/{len(all_configs)}] ... still testing")
           print(f"  Found {len(active)} active configs.")
 
-          print("[4/5] Sorting and keeping fastest...")
+          # مرتب‌سازی و نگهداری سریع‌ترین‌ها
           active.sort(key=lambda x: x['latency'])
           fastest = active[:MAX_CONFIGS_TO_KEEP]
           print(f"  Keeping {len(fastest)} fastest configs (max {MAX_CONFIGS_TO_KEEP}).")
 
           output_configs = [item['proxy'] for item in fastest]
 
-          print("[5/5] Generating output files...")
+          print("[4/5] Generating output files...")
           with open('active_configs.json', 'w') as f:
               json.dump(output_configs, f, indent=2)
           print("  ✓ active_configs.json")
@@ -389,7 +406,7 @@ jobs:
               f.write(readme_content)
           print("  ✓ README.md")
 
-          # Commit & Push
+          # Commit and push
           repo_url = f"https://x-access-token:{os.environ['GITHUB_TOKEN']}@github.com/{os.environ['GITHUB_REPOSITORY']}.git"
           os.system('git config user.name "github-actions[bot]"')
           os.system('git config user.email "github-actions[bot]@users.noreply.github.com"')
