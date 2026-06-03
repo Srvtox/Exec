@@ -15,7 +15,6 @@ on:
 jobs:
   download-and-release:
     runs-on: ubuntu-latest
-    # این بخش برای اینه که گیت‌هاب اجازه داشته باشه فایل رو آپلود کنه
     permissions:
       contents: write
 
@@ -23,77 +22,88 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install aria2
-        run: sudo apt-get update && sudo apt-get install -y aria2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 curl wget tar
 
       - name: Prepare Download Directory
         run: mkdir -p downloads
+
       - name: Install WGCF
         run: |
           wget -q https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_2.2.31_linux_amd64 -O wgcf
           chmod +x wgcf
-          sudo mv wgcf /usr/local/bin/
+          sudo mv wgcf /usr/local/bin/wgcf
 
           wgcf register --accept-tos
           wgcf generate
 
-      # ==========================================
-      # Install WireProxy
-      # ==========================================
       - name: Install WireProxy
         run: |
           wget -q https://github.com/pufferffish/wireproxy/releases/latest/download/wireproxy_linux_amd64.tar.gz -O wireproxy.tar.gz
-          
           tar -xzf wireproxy.tar.gz
-          
           chmod +x wireproxy
-          sudo mv wireproxy /usr/local/bin/
+          sudo mv wireproxy /usr/local/bin/wireproxy
 
-          wireproxy --version || echo "WireProxy installed!"
-      # ==========================================
-      # Start WARP Proxy
-      # ==========================================
-      - name: Start WARP
+          wireproxy --version || true
+
+      - name: Start WARP SOCKS5 Proxy
         run: |
           mkdir -p warp
 
+          PRIVATE_KEY=$(grep PrivateKey wgcf-profile.conf | awk '{print $3}')
+          PUBLIC_KEY=$(grep PublicKey wgcf-profile.conf | awk '{print $3}')
+          ENDPOINT=$(grep Endpoint wgcf-profile.conf | awk '{print $3}')
+
           cat > warp/config.ini << EOF
           [Interface]
-          PrivateKey = $(grep PrivateKey wgcf-profile.conf | awk '{print $3}')
+          PrivateKey = ${PRIVATE_KEY}
           Address = 172.16.0.2/32
           DNS = 1.1.1.1
           MTU = 1280
 
           [Peer]
-          PublicKey = $(grep PublicKey wgcf-profile.conf | awk '{print $3}')
-          Endpoint = $(grep Endpoint wgcf-profile.conf | awk '{print $3}')
+          PublicKey = ${PUBLIC_KEY}
+          Endpoint = ${ENDPOINT}
           AllowedIPs = 0.0.0.0/0
 
           [Socks5]
           BindAddress = 127.0.0.1:1080
           EOF
 
-          nohup wireproxy -c warp/config.ini &
+          nohup wireproxy -c warp/config.ini > warp/wireproxy.log 2>&1 &
+          sleep 8
 
-          sleep 6
+          echo "=== WireProxy log ==="
+          cat warp/wireproxy.log || true
 
-          echo "Testing WARP IP:"
-          curl --socks5 127.0.0.1:1080 https://ipinfo.io
+          echo "=== Testing WARP IP ==="
+          curl --socks5-hostname 127.0.0.1:1080 https://ipinfo.io || true
 
-
-      - name: Mega Download
+      - name: Download file via WARP
         run: |
           cd downloads
-          # استفاده از aria2c برای همه نوع لینکی (HTTP, Torrent, Magnet)
-          # این ابزار هوشمندانه اسم فایل رو از هدرهای سایت استخراج می‌کنه
-          aria2c --continue=true \
-                 --max-connection-per-server=16 \
-                 --split=16 \
-                 --remote-time=true \
-                 --summary-interval=15 \
-                 "${{ github.event.inputs.file_url }}"
-          
-          echo "ببینیم چی دانلود شده:"
+          URL="${{ github.event.inputs.file_url }}"
+
+          echo "Downloading: $URL"
+
+          aria2c \
+            --all-proxy="socks5://127.0.0.1:1080" \
+            --check-certificate=true \
+            --continue=true \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=5M \
+            --remote-time=true \
+            --summary-interval=15 \
+            --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" \
+            --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+            --header="Accept-Language: en-US,en;q=0.9" \
+            --header="Referer: https://sourceforge.net/" \
+            "$URL"
+
+          echo "=== Downloaded files ==="
           ls -lh
 
       - name: Create Release and Upload
@@ -101,7 +111,6 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}-${{ github.run_id }}
           name: "Release ${{ github.event.inputs.release_tag }} (Build ${{ github.run_number }})"
-          # اینجا میگیم هر چی توی پوشه دانلود هست رو بردار و آپلود کن
           files: downloads/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
