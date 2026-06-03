@@ -2,8 +2,8 @@ name: Check V2Ray Configs
 
 on:
   schedule:
-    - cron: '*/180 * * * *'   # هر 3 ساعت یکبار اجرا شود
-  workflow_dispatch:          # قابلیت اجرای دستی
+    - cron: '*/180 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -35,6 +35,7 @@ jobs:
 
       - name: Run health check script
         env:
+          PYTHONUNBUFFERED: 1        # <-- غیرفعال کردن بافر خروجی پایتون
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - << 'EOF'
@@ -43,29 +44,30 @@ jobs:
           from urllib.parse import parse_qs
           import tempfile
 
-          # ----------------------------- Configuration ----------------------------
-          # آدرس فایل حاوی لیست کانفیگ‌ها
-          CONFIG_SOURCE_URL = "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Vless.txt"
-          MAX_CONFIGS_TO_KEEP = 10          # تعداد نهایی کانفیگ‌های سریع
-          TEST_TIMEOUT = 5                  # ثانیه برای تست هر پروکسی
-          TEST_URL = "http://www.gstatic.com/generate_204"   # برای تست latency
-          PARALLEL_WORKERS = 5              # تعداد تست همزمان
+          # اطمینان از real-time خروجی (تکمیل‌کننده PYTHONUNBUFFERED)
+          sys.stdout.reconfigure(line_buffering=True)
 
-          # ----------------------------- Helper Functions -------------------------
+          # ----------------------------- Configuration ----------------------------
+          CONFIG_SOURCE_URL = "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Vless.txt"
+          MAX_CONFIGS_TO_KEEP = 10
+          TEST_TIMEOUT = 5
+          TEST_URL = "http://www.gstatic.com/generate_204"
+          PARALLEL_WORKERS = 5
+
           def fetch_configs(url):
-              """دریافت لیست کانفیگ‌ها از فایل خام"""
+              print(f"[1/5] Fetching configs from {url} ...")
               try:
                   import requests
                   resp = requests.get(url, timeout=30)
                   if resp.status_code != 200:
-                      print(f"Failed to fetch configs: {resp.status_code}")
+                      print(f"  ✗ Failed: HTTP {resp.status_code}")
                       return []
                   content = resp.text.strip()
                   lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
-                  print(f"Fetched {len(lines)} config lines")
+                  print(f"  ✓ Fetched {len(lines)} config links")
                   return lines
               except Exception as e:
-                  print(f"Error fetching configs: {e}")
+                  print(f"  ✗ Error: {e}")
                   return []
 
           def parse_v2ray_link(link):
@@ -233,46 +235,53 @@ jobs:
                   os.unlink(conf_path)
 
           # ----------------------------- Main Workflow ----------------------------
-          # دریافت لیست کانفیگ‌ها از فایل Vless.txt
           config_links = fetch_configs(CONFIG_SOURCE_URL)
           if not config_links:
-              print("No config links found.")
+              print("No config links found. Exiting.")
               sys.exit(1)
 
-          # پارس کردن لینک‌ها
+          print("[2/5] Parsing config links...")
           all_configs = []
-          for link in config_links:
+          for idx, link in enumerate(config_links, 1):
               cfg = parse_v2ray_link(link)
               if cfg:
                   all_configs.append(cfg)
+                  print(f"  ✓ Parsed {cfg['protocol']}: {cfg.get('name', cfg['address'])}")
+              else:
+                  print(f"  ✗ Failed to parse: {link[:50]}...")
+          print(f"  Total valid configs: {len(all_configs)}")
 
-          print(f"Total configs parsed: {len(all_configs)}")
-
-          # تست موازی
+          print(f"[3/5] Testing {len(all_configs)} configs in parallel (workers={PARALLEL_WORKERS})...")
           active = []
           with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
               futures = []
               for i, cfg in enumerate(all_configs):
                   socks_port = 10800 + (i % 1000)
                   futures.append(executor.submit(test_proxy_with_xray, cfg, socks_port))
+              completed = 0
               for fut in as_completed(futures):
+                  completed += 1
                   res = fut.result()
                   if res and res['success']:
                       active.append(res)
+                      print(f"  [{completed}/{len(all_configs)}] ✓ ACTIVE - {res['proxy'].get('name', res['proxy']['address'])} ({res['latency']} ms)")
+                  else:
+                      print(f"  [{completed}/{len(all_configs)}] ✗ INACTIVE")
+          print(f"  Found {len(active)} active configs.")
 
-          # مرتب‌سازی بر اساس latency و نگهداری سریع‌ترین‌ها
+          print("[4/5] Sorting and keeping fastest...")
           active.sort(key=lambda x: x['latency'])
           fastest = active[:MAX_CONFIGS_TO_KEEP]
-
-          print(f"Active configs: {len(active)} | Keeping {len(fastest)} fastest")
+          print(f"  Keeping {len(fastest)} fastest configs (max {MAX_CONFIGS_TO_KEEP}).")
 
           output_configs = [item['proxy'] for item in fastest]
 
-          # 1. JSON
+          print("[5/5] Generating output files...")
           with open('active_configs.json', 'w') as f:
               json.dump(output_configs, f, indent=2)
+          print("  ✓ active_configs.json")
 
-          # 2. Clash
+          # Clash
           clash_proxies = []
           for p in output_configs:
               if p['protocol'] == 'vmess':
@@ -319,8 +328,8 @@ jobs:
           }
           with open('clash.yaml', 'w') as f:
               yaml.dump(clash_config, f, allow_unicode=True, sort_keys=False)
+          print("  ✓ clash.yaml")
 
-          # 3. Singbox
           singbox_outbounds = []
           for p in output_configs:
               if p['protocol'] == 'vmess':
@@ -356,8 +365,9 @@ jobs:
           singbox_config = {"outbounds": singbox_outbounds}
           with open('singbox.json', 'w') as f:
               json.dump(singbox_config, f, indent=2)
+          print("  ✓ singbox.json")
 
-          # 4. به‌روزرسانی README.md با جدول مارک‌داون
+          # README.md
           readme_content = "# V2Ray Active Configs\n\n"
           readme_content += "Last update: " + time.strftime("%Y-%m-%d %H:%M:%S UTC") + "\n\n"
           readme_content += f"Source: [Vless.txt]({CONFIG_SOURCE_URL})\n\n"
@@ -377,12 +387,14 @@ jobs:
 
           with open('README.md', 'w') as f:
               f.write(readme_content)
+          print("  ✓ README.md")
 
-          # Commit و Push
+          # Commit & Push
           repo_url = f"https://x-access-token:{os.environ['GITHUB_TOKEN']}@github.com/{os.environ['GITHUB_REPOSITORY']}.git"
           os.system('git config user.name "github-actions[bot]"')
           os.system('git config user.email "github-actions[bot]@users.noreply.github.com"')
           os.system('git add README.md active_configs.json clash.yaml singbox.json')
           os.system('git commit -m "Update active configs" || echo "No changes to commit"')
           os.system(f'git push {repo_url} HEAD:main')
+          print("✅ Done! Files updated and pushed.")
           EOF
