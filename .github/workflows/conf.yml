@@ -29,7 +29,7 @@ jobs:
       - name: Download Xray core
         run: |
           wget https://github.com/XTLS/Xray-core/releases/download/v1.8.13/Xray-linux-64.zip
-          unzip Xray-linux-64.zip
+          unzip -o Xray-linux-64.zip
           chmod +x xray
           sudo mv xray /usr/local/bin/
           rm Xray-linux-64.zip
