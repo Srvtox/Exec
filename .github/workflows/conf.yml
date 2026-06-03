@@ -3,7 +3,7 @@ name: Check V2Ray Configs
 on:
   schedule:
     - cron: '*/180 * * * *'   # هر 3 ساعت
-  workflow_dispatch:          # اجرای دستی
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,8 +14,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
+        # دیگر نیازی به token نیست – از GITHUB_TOKEN پیش‌فرض استفاده می‌کند
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -38,7 +37,7 @@ jobs:
       - name: Run health check script
         env:
           SUBSCRIPTIONS: ${{ secrets.SUBSCRIPTION_URLS }}
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - << 'EOF'
           import os, sys, re, base64, json, yaml, time, subprocess, socket, asyncio, aiohttp
@@ -52,27 +51,24 @@ jobs:
               print("No subscription URLs provided.")
               sys.exit(1)
 
-          MAX_CONFIGS_TO_KEEP = 10          # تعداد نهایی کانفیگ‌های سریع
-          TEST_TIMEOUT = 5                  # ثانیه برای تست هر پروکسی
-          TEST_URL = "http://www.gstatic.com/generate_204"   # برای تست latency
-          PARALLEL_WORKERS = 5              # تعداد تست همزمان
+          MAX_CONFIGS_TO_KEEP = 10
+          TEST_TIMEOUT = 5
+          TEST_URL = "http://www.gstatic.com/generate_204"
+          PARALLEL_WORKERS = 5
 
           # ----------------------------- Helper Functions -------------------------
           def fetch_subscription(url):
-              """دریافت محتوای اشتراک (base64 یا plain)"""
               try:
                   import requests
                   resp = requests.get(url, timeout=10)
                   if resp.status_code != 200:
                       return []
                   content = resp.text.strip()
-                  # تشخیص base64 (اشتراک‌های V2Ray معمولاً base64 هستند)
                   if re.match(r'^[A-Za-z0-9+/=]+$', content) and len(content) % 4 == 0:
                       try:
                           content = base64.b64decode(content).decode('utf-8')
                       except:
                           pass
-                  # هر لینک یک خط
                   lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
                   return lines
               except Exception as e:
@@ -80,7 +76,6 @@ jobs:
                   return []
 
           def parse_v2ray_link(link):
-              """تبدیل لینک vmess/vless/trojan به دیکشنری"""
               if link.startswith("vmess://"):
                   b64 = link[8:]
                   try:
@@ -90,7 +85,6 @@ jobs:
                   except:
                       return None
               elif link.startswith("vless://"):
-                  # vless://uuid@address:port?params#name
                   parts = link[8:].split('#')
                   name = parts[1] if len(parts) > 1 else ''
                   main = parts[0].split('?')
@@ -112,7 +106,6 @@ jobs:
                       'name': name
                   }
               elif link.startswith("trojan://"):
-                  # trojan://password@address:port?params#name
                   parts = link[9:].split('#')
                   name = parts[1] if len(parts) > 1 else ''
                   main = parts[0].split('?')
@@ -130,14 +123,10 @@ jobs:
                       'sni': query.get('sni', [''])[0],
                       'name': name
                   }
-              elif link.startswith("ss://"):
-                  # قابل گسترش
-                  return None
               else:
                   return None
 
           def generate_xray_config(proxy, socks_port):
-              """ایجاد فایل کانفیگ موقت Xray برای یک پروکسی"""
               if proxy['protocol'] == 'vmess':
                   outbound = {
                       "protocol": "vmess",
@@ -204,7 +193,6 @@ jobs:
               return config
 
           def test_proxy_with_xray(proxy, socks_port, test_url=TEST_URL, timeout=TEST_TIMEOUT):
-              """اجرای Xray برای یک پروکسی و اندازه‌گیری latency از طریق پروکسی"""
               config = generate_xray_config(proxy, socks_port)
               if not config:
                   return None
@@ -214,10 +202,8 @@ jobs:
               os.close(fd)
 
               try:
-                  # اجرای Xray
                   proc = subprocess.Popen(["/usr/local/bin/xray", "-c", conf_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                  time.sleep(0.5)  # منتظر بالا آمدن
-                  # تست از طریق پروکسی SOCKS5
+                  time.sleep(0.5)
                   start = time.time()
                   cmd = [
                       "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
@@ -250,7 +236,6 @@ jobs:
 
           print(f"Total configs parsed: {len(all_configs)}")
 
-          # تست موازی
           active = []
           with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
               futures = []
@@ -262,22 +247,19 @@ jobs:
                   if res and res['success']:
                       active.append(res)
 
-          # مرتب‌سازی بر اساس latency و نگهداری سریع‌ترین‌ها
           active.sort(key=lambda x: x['latency'])
           fastest = active[:MAX_CONFIGS_TO_KEEP]
 
           print(f"Active configs: {len(active)} | Keeping {len(fastest)} fastest")
 
-          # آماده‌سازی داده‌ها برای خروجی
           output_configs = [item['proxy'] for item in fastest]
           latency_map = {item['proxy'].get('name', f"{item['proxy']['address']}:{item['proxy']['port']}"): item['latency'] for item in fastest}
 
-          # ----------------------------- تولید فایل‌های خروجی -------------------------
-          # 1. JSON
+          # JSON
           with open('active_configs.json', 'w') as f:
               json.dump(output_configs, f, indent=2)
 
-          # 2. Clash (ساده)
+          # Clash
           clash_proxies = []
           for p in output_configs:
               if p['protocol'] == 'vmess':
@@ -325,7 +307,7 @@ jobs:
           with open('clash.yaml', 'w') as f:
               yaml.dump(clash_config, f, allow_unicode=True, sort_keys=False)
 
-          # 3. Singbox (ساده)
+          # Singbox
           singbox_outbounds = []
           for p in output_configs:
               if p['protocol'] == 'vmess':
@@ -362,7 +344,7 @@ jobs:
           with open('singbox.json', 'w') as f:
               json.dump(singbox_config, f, indent=2)
 
-          # 4. به‌روزرسانی README.md با جدول مارک‌داون
+          # README.md
           readme_content = "# V2Ray Active Configs\n\n"
           readme_content += "Last update: " + time.strftime("%Y-%m-%d %H:%M:%S UTC") + "\n\n"
           if fastest:
@@ -382,11 +364,11 @@ jobs:
           with open('README.md', 'w') as f:
               f.write(readme_content)
 
-          # commit و push تغییرات
+          # Commit and push using GITHUB_TOKEN
+          repo_url = f"https://x-access-token:{os.environ['GITHUB_TOKEN']}@github.com/{os.environ['GITHUB_REPOSITORY']}.git"
           os.system('git config user.name "github-actions[bot]"')
           os.system('git config user.email "github-actions[bot]@users.noreply.github.com"')
           os.system('git add README.md active_configs.json clash.yaml singbox.json')
           os.system('git commit -m "Update active configs" || echo "No changes to commit"')
-          os.system('git push https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main')
+          os.system(f'git push {repo_url} HEAD:main')
           EOF
-          
