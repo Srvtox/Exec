@@ -2,7 +2,7 @@ name: Check V2Ray Configs
 
 on:
   schedule:
-    - cron: '*/180 * * * *'   # هر 3 ساعت
+    - cron: '*/180 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        # دیگر نیازی به token نیست – از GITHUB_TOKEN پیش‌فرض استفاده می‌کند
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -24,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests aiohttp PyYAML
+          pip install requests PyYAML
 
       - name: Download Xray core
         run: |
@@ -40,10 +39,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - << 'EOF'
-          import os, sys, re, base64, json, yaml, time, subprocess, socket, asyncio, aiohttp
+          import os, sys, re, base64, json, yaml, time, subprocess
           from concurrent.futures import ThreadPoolExecutor, as_completed
-          from urllib.parse import urlparse, parse_qs
-          import tempfile, shutil, glob, random, string
+          from urllib.parse import parse_qs
+          import tempfile
 
           # ----------------------------- Configuration ----------------------------
           SUBSCRIPTION_URLS = os.environ.get("SUBSCRIPTIONS", "").strip().splitlines()
@@ -92,13 +91,22 @@ jobs:
                   if len(user_host) != 2:
                       return None
                   uuid, host_port = user_host[0], user_host[1]
-                  host, port = host_port.split(':')
+                  # جدا کردن host و port با مدیریت کاراکترهای اضافی
+                  host_port_parts = host_port.split(':')
+                  if len(host_port_parts) < 2:
+                      return None
+                  host = host_port_parts[0]
+                  port_str = host_port_parts[1].split('/')[0].split('?')[0]
+                  try:
+                      port = int(port_str)
+                  except:
+                      return None
                   query = parse_qs(main[1]) if len(main) > 1 else {}
                   return {
                       'protocol': 'vless',
                       'id': uuid,
                       'address': host,
-                      'port': int(port),
+                      'port': port,
                       'encryption': query.get('encryption', ['none'])[0],
                       'flow': query.get('flow', [''])[0],
                       'security': query.get('security', ['auto'])[0],
@@ -113,13 +121,21 @@ jobs:
                   if len(auth_host) != 2:
                       return None
                   password, host_port = auth_host[0], auth_host[1]
-                  host, port = host_port.split(':')
+                  host_port_parts = host_port.split(':')
+                  if len(host_port_parts) < 2:
+                      return None
+                  host = host_port_parts[0]
+                  port_str = host_port_parts[1].split('/')[0].split('?')[0]
+                  try:
+                      port = int(port_str)
+                  except:
+                      return None
                   query = parse_qs(main[1]) if len(main) > 1 else {}
                   return {
                       'protocol': 'trojan',
                       'password': password,
                       'address': host,
-                      'port': int(port),
+                      'port': port,
                       'sni': query.get('sni', [''])[0],
                       'name': name
                   }
@@ -253,7 +269,6 @@ jobs:
           print(f"Active configs: {len(active)} | Keeping {len(fastest)} fastest")
 
           output_configs = [item['proxy'] for item in fastest]
-          latency_map = {item['proxy'].get('name', f"{item['proxy']['address']}:{item['proxy']['port']}"): item['latency'] for item in fastest}
 
           # JSON
           with open('active_configs.json', 'w') as f:
