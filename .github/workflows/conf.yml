@@ -1,161 +1,392 @@
 name: Check V2Ray Configs
 
 on:
-  workflow_dispatch:
-    inputs:
-      subscription_url:
-        description: "V2Ray subscription URL"
-        required: true
-        type: string
+  schedule:
+    - cron: '*/180 * * * *'   # هر 3 ساعت
+  workflow_dispatch:          # اجرای دستی
+
+permissions:
+  contents: write
 
 jobs:
-  check-configs:
+  test-configs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Check configs from subscription
-        env:
-          SUBSCRIPTION_URL: ${{ github.event.inputs.subscription_url }}
+      - name: Install dependencies
         run: |
-          python << 'PY'
-          import os
-          import re
-          import json
-          import base64
-          import socket
-          import urllib.request
-          import urllib.parse
+          python -m pip install --upgrade pip
+          pip install requests aiohttp PyYAML
 
-          SUBSCRIPTION_URL = os.environ["SUBSCRIPTION_URL"]
-          TIMEOUT = 5
+      - name: Download Xray core
+        run: |
+          wget https://github.com/XTLS/Xray-core/releases/download/v1.8.13/Xray-linux-64.zip
+          unzip Xray-linux-64.zip
+          chmod +x xray
+          sudo mv xray /usr/local/bin/
+          rm Xray-linux-64.zip
 
-          def safe_b64decode(data: str) -> bytes:
-              data = data.strip()
-              padding = len(data) % 4
-              if padding:
-                  data += "=" * (4 - padding)
-              return base64.urlsafe_b64decode(data)
+      - name: Run health check script
+        env:
+          SUBSCRIPTIONS: ${{ secrets.SUBSCRIPTION_URLS }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          python3 - << 'EOF'
+          import os, sys, re, base64, json, yaml, time, subprocess, socket, asyncio, aiohttp
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from urllib.parse import urlparse, parse_qs
+          import tempfile, shutil, glob, random, string
 
+          # ----------------------------- Configuration ----------------------------
+          SUBSCRIPTION_URLS = os.environ.get("SUBSCRIPTIONS", "").strip().splitlines()
+          if not SUBSCRIPTION_URLS:
+              print("No subscription URLs provided.")
+              sys.exit(1)
+
+          MAX_CONFIGS_TO_KEEP = 10          # تعداد نهایی کانفیگ‌های سریع
+          TEST_TIMEOUT = 5                  # ثانیه برای تست هر پروکسی
+          TEST_URL = "http://www.gstatic.com/generate_204"   # برای تست latency
+          PARALLEL_WORKERS = 5              # تعداد تست همزمان
+
+          # ----------------------------- Helper Functions -------------------------
           def fetch_subscription(url):
-              req = urllib.request.Request(
-                  url,
-                  headers={"User-Agent": "Mozilla/5.0"}
-              )
-              with urllib.request.urlopen(req, timeout=15) as resp:
-                  return resp.read().decode("utf-8", errors="ignore").strip()
-
-          def try_decode_subscription(text):
-              # بعضی subscriptionها base64 هستند، بعضی نه
+              """دریافت محتوای اشتراک (base64 یا plain)"""
               try:
-                  decoded = safe_b64decode(text).decode("utf-8", errors="ignore")
-                  if "vmess://" in decoded or "vless://" in decoded or "trojan://" in decoded or "ss://" in decoded:
-                      return decoded
-              except Exception:
-                  pass
-              return text
-
-          def parse_vmess(link):
-              raw = link[len("vmess://"):].strip()
-              data = safe_b64decode(raw).decode("utf-8", errors="ignore")
-              obj = json.loads(data)
-              host = obj.get("add")
-              port = int(obj.get("port"))
-              return host, port
-
-          def parse_vless(link):
-              parsed = urllib.parse.urlparse(link)
-              host = parsed.hostname
-              port = parsed.port
-              return host, port
-
-          def parse_trojan(link):
-              parsed = urllib.parse.urlparse(link)
-              host = parsed.hostname
-              port = parsed.port
-              return host, port
-
-          def parse_ss(link):
-              raw = link[len("ss://"):]
-              if "#" in raw:
-                  raw = raw.split("#", 1)[0]
-
-              if "@" in raw:
-                  # فرمت جدید
-                  parsed = urllib.parse.urlparse("ss://" + raw)
-                  return parsed.hostname, parsed.port
-              else:
-                  # فرمت base64 قدیمی
-                  decoded = safe_b64decode(raw).decode("utf-8", errors="ignore")
-                  # method:password@host:port
-                  m = re.search(r'@([^:]+):(\d+)', decoded)
-                  if not m:
-                      raise ValueError("Invalid SS config")
-                  return m.group(1), int(m.group(2))
-
-          def extract_host_port(link):
-              if link.startswith("vmess://"):
-                  return parse_vmess(link)
-              elif link.startswith("vless://"):
-                  return parse_vless(link)
-              elif link.startswith("trojan://"):
-                  return parse_trojan(link)
-              elif link.startswith("ss://"):
-                  return parse_ss(link)
-              else:
-                  raise ValueError("Unsupported protocol")
-
-          def test_tcp(host, port, timeout=TIMEOUT):
-              try:
-                  with socket.create_connection((host, port), timeout=timeout):
-                      return True
-              except Exception:
-                  return False
-
-          content = fetch_subscription(SUBSCRIPTION_URL)
-          content = try_decode_subscription(content)
-
-          lines = [line.strip() for line in content.splitlines() if line.strip()]
-          supported = []
-          active = []
-
-          for line in lines:
-              if line.startswith(("vmess://", "vless://", "trojan://", "ss://")):
-                  supported.append(line)
-
-          print(f"Total supported configs found: {len(supported)}")
-
-          for cfg in supported:
-              try:
-                  host, port = extract_host_port(cfg)
-                  ok = test_tcp(host, port)
-                  status = "ACTIVE" if ok else "INACTIVE"
-                  print(f"[{status}] {host}:{port}")
-                  if ok:
-                      active.append(cfg)
+                  import requests
+                  resp = requests.get(url, timeout=10)
+                  if resp.status_code != 200:
+                      return []
+                  content = resp.text.strip()
+                  # تشخیص base64 (اشتراک‌های V2Ray معمولاً base64 هستند)
+                  if re.match(r'^[A-Za-z0-9+/=]+$', content) and len(content) % 4 == 0:
+                      try:
+                          content = base64.b64decode(content).decode('utf-8')
+                      except:
+                          pass
+                  # هر لینک یک خط
+                  lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+                  return lines
               except Exception as e:
-                  print(f"[ERROR] Could not parse/test config: {cfg[:80]}... -> {e}")
+                  print(f"Error fetching {url}: {e}")
+                  return []
 
-          with open("active_configs.txt", "w", encoding="utf-8") as f:
-              for item in active:
-                  f.write(item + "\n")
+          def parse_v2ray_link(link):
+              """تبدیل لینک vmess/vless/trojan به دیکشنری"""
+              if link.startswith("vmess://"):
+                  b64 = link[8:]
+                  try:
+                      data = json.loads(base64.b64decode(b64))
+                      data['protocol'] = 'vmess'
+                      return data
+                  except:
+                      return None
+              elif link.startswith("vless://"):
+                  # vless://uuid@address:port?params#name
+                  parts = link[8:].split('#')
+                  name = parts[1] if len(parts) > 1 else ''
+                  main = parts[0].split('?')
+                  user_host = main[0].split('@')
+                  if len(user_host) != 2:
+                      return None
+                  uuid, host_port = user_host[0], user_host[1]
+                  host, port = host_port.split(':')
+                  query = parse_qs(main[1]) if len(main) > 1 else {}
+                  return {
+                      'protocol': 'vless',
+                      'id': uuid,
+                      'address': host,
+                      'port': int(port),
+                      'encryption': query.get('encryption', ['none'])[0],
+                      'flow': query.get('flow', [''])[0],
+                      'security': query.get('security', ['auto'])[0],
+                      'sni': query.get('sni', [''])[0],
+                      'name': name
+                  }
+              elif link.startswith("trojan://"):
+                  # trojan://password@address:port?params#name
+                  parts = link[9:].split('#')
+                  name = parts[1] if len(parts) > 1 else ''
+                  main = parts[0].split('?')
+                  auth_host = main[0].split('@')
+                  if len(auth_host) != 2:
+                      return None
+                  password, host_port = auth_host[0], auth_host[1]
+                  host, port = host_port.split(':')
+                  query = parse_qs(main[1]) if len(main) > 1 else {}
+                  return {
+                      'protocol': 'trojan',
+                      'password': password,
+                      'address': host,
+                      'port': int(port),
+                      'sni': query.get('sni', [''])[0],
+                      'name': name
+                  }
+              elif link.startswith("ss://"):
+                  # قابل گسترش
+                  return None
+              else:
+                  return None
 
-          print("\n=== ACTIVE CONFIGS ===")
-          for item in active:
-              print(item)
+          def generate_xray_config(proxy, socks_port):
+              """ایجاد فایل کانفیگ موقت Xray برای یک پروکسی"""
+              if proxy['protocol'] == 'vmess':
+                  outbound = {
+                      "protocol": "vmess",
+                      "settings": {
+                          "vnext": [{
+                              "address": proxy['address'],
+                              "port": proxy['port'],
+                              "users": [{"id": proxy['id'], "alterId": proxy.get('aid', 0), "security": proxy.get('security', 'auto')}]
+                          }]
+                      },
+                      "streamSettings": {
+                          "network": proxy.get('net', 'tcp'),
+                          "security": proxy.get('tls', 'none'),
+                          "wsSettings": {"path": proxy.get('path', '/'), "headers": {"Host": proxy.get('host', '')}} if proxy.get('net') == 'ws' else None,
+                          "tcpSettings": {"header": {"type": "http", "request": {"headers": {"Host": [proxy.get('host', '')]}}} if proxy.get('type') == 'http' else None}
+                      }
+                  }
+              elif proxy['protocol'] == 'vless':
+                  outbound = {
+                      "protocol": "vless",
+                      "settings": {
+                          "vnext": [{
+                              "address": proxy['address'],
+                              "port": proxy['port'],
+                              "users": [{"id": proxy['id'], "encryption": proxy.get('encryption', 'none'), "flow": proxy.get('flow', '')}]
+                          }]
+                      },
+                      "streamSettings": {
+                          "network": "tcp",
+                          "security": proxy.get('security', 'none'),
+                          "tlsSettings": {"serverName": proxy.get('sni', '')} if proxy.get('security') == 'tls' else None
+                      }
+                  }
+              elif proxy['protocol'] == 'trojan':
+                  outbound = {
+                      "protocol": "trojan",
+                      "settings": {
+                          "servers": [{
+                              "address": proxy['address'],
+                              "port": proxy['port'],
+                              "password": proxy['password'],
+                              "flow": "xtls-rprx-vision"
+                          }]
+                      },
+                      "streamSettings": {
+                          "network": "tcp",
+                          "security": "tls",
+                          "tlsSettings": {"serverName": proxy.get('sni', proxy['address'])}
+                      }
+                  }
+              else:
+                  return None
 
-          print(f"\nSaved {len(active)} active configs to active_configs.txt")
-          PY
+              config = {
+                  "log": {"loglevel": "warning"},
+                  "inbounds": [{
+                      "port": socks_port,
+                      "protocol": "socks",
+                      "settings": {"auth": "noauth", "udp": True}
+                  }],
+                  "outbounds": [outbound, {"protocol": "freedom", "tag": "direct"}],
+                  "routing": {"domainStrategy": "AsIs", "rules": [{"type": "field", "outboundTag": "direct", "domain": ["geosite:category-ads-all"]}]}
+              }
+              return config
 
-      - name: Upload active configs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: active-configs
-          path: active_configs.txt
+          def test_proxy_with_xray(proxy, socks_port, test_url=TEST_URL, timeout=TEST_TIMEOUT):
+              """اجرای Xray برای یک پروکسی و اندازه‌گیری latency از طریق پروکسی"""
+              config = generate_xray_config(proxy, socks_port)
+              if not config:
+                  return None
+              fd, conf_path = tempfile.mkstemp(suffix='.json')
+              with open(conf_path, 'w') as f:
+                  json.dump(config, f)
+              os.close(fd)
+
+              try:
+                  # اجرای Xray
+                  proc = subprocess.Popen(["/usr/local/bin/xray", "-c", conf_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  time.sleep(0.5)  # منتظر بالا آمدن
+                  # تست از طریق پروکسی SOCKS5
+                  start = time.time()
+                  cmd = [
+                      "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                      "--socks5", f"127.0.0.1:{socks_port}", "--connect-timeout", str(timeout),
+                      "--max-time", str(timeout), test_url
+                  ]
+                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout+1)
+                  elapsed = time.time() - start
+                  if result.returncode == 0 and result.stdout.strip() == "204":
+                      return {"proxy": proxy, "latency": round(elapsed * 1000), "success": True}
+                  else:
+                      return None
+              except Exception as e:
+                  return None
+              finally:
+                  proc.terminate()
+                  proc.wait(timeout=2)
+                  os.unlink(conf_path)
+
+          # ----------------------------- Main Workflow ----------------------------
+          all_configs = []
+          for sub_url in SUBSCRIPTION_URLS:
+              print(f"Fetching {sub_url}")
+              links = fetch_subscription(sub_url)
+              for link in links:
+                  cfg = parse_v2ray_link(link)
+                  if cfg:
+                      cfg['source_url'] = sub_url
+                      all_configs.append(cfg)
+
+          print(f"Total configs parsed: {len(all_configs)}")
+
+          # تست موازی
+          active = []
+          with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+              futures = []
+              for i, cfg in enumerate(all_configs):
+                  socks_port = 10800 + (i % 1000)
+                  futures.append(executor.submit(test_proxy_with_xray, cfg, socks_port))
+              for fut in as_completed(futures):
+                  res = fut.result()
+                  if res and res['success']:
+                      active.append(res)
+
+          # مرتب‌سازی بر اساس latency و نگهداری سریع‌ترین‌ها
+          active.sort(key=lambda x: x['latency'])
+          fastest = active[:MAX_CONFIGS_TO_KEEP]
+
+          print(f"Active configs: {len(active)} | Keeping {len(fastest)} fastest")
+
+          # آماده‌سازی داده‌ها برای خروجی
+          output_configs = [item['proxy'] for item in fastest]
+          latency_map = {item['proxy'].get('name', f"{item['proxy']['address']}:{item['proxy']['port']}"): item['latency'] for item in fastest}
+
+          # ----------------------------- تولید فایل‌های خروجی -------------------------
+          # 1. JSON
+          with open('active_configs.json', 'w') as f:
+              json.dump(output_configs, f, indent=2)
+
+          # 2. Clash (ساده)
+          clash_proxies = []
+          for p in output_configs:
+              if p['protocol'] == 'vmess':
+                  clash_proxies.append({
+                      "name": p.get('name', p['address']),
+                      "type": "vmess",
+                      "server": p['address'],
+                      "port": p['port'],
+                      "uuid": p['id'],
+                      "alterId": p.get('aid', 0),
+                      "cipher": "auto",
+                      "tls": p.get('tls') == 'tls',
+                      "skip-cert-verify": True,
+                      "network": p.get('net', 'tcp'),
+                      "ws-path": p.get('path', '/'),
+                      "ws-headers": {"Host": p.get('host', '')} if p.get('net') == 'ws' else None
+                  })
+              elif p['protocol'] == 'vless':
+                  clash_proxies.append({
+                      "name": p.get('name', p['address']),
+                      "type": "vless",
+                      "server": p['address'],
+                      "port": p['port'],
+                      "uuid": p['id'],
+                      "flow": p.get('flow', ''),
+                      "tls": p.get('security') == 'tls',
+                      "skip-cert-verify": True,
+                      "servername": p.get('sni', ''),
+                      "network": "tcp"
+                  })
+              elif p['protocol'] == 'trojan':
+                  clash_proxies.append({
+                      "name": p.get('name', p['address']),
+                      "type": "trojan",
+                      "server": p['address'],
+                      "port": p['port'],
+                      "password": p['password'],
+                      "sni": p.get('sni', ''),
+                      "skip-cert-verify": True
+                  })
+          clash_config = {
+              "proxies": clash_proxies,
+              "proxy-groups": [{"name": "PROXY", "type": "select", "proxies": [c['name'] for c in clash_proxies]}]
+          }
+          with open('clash.yaml', 'w') as f:
+              yaml.dump(clash_config, f, allow_unicode=True, sort_keys=False)
+
+          # 3. Singbox (ساده)
+          singbox_outbounds = []
+          for p in output_configs:
+              if p['protocol'] == 'vmess':
+                  singbox_outbounds.append({
+                      "type": "vmess",
+                      "tag": p.get('name', p['address']),
+                      "server": p['address'],
+                      "server_port": p['port'],
+                      "uuid": p['id'],
+                      "security": "auto",
+                      "alter_id": p.get('aid', 0),
+                      "transport": {"type": "ws", "path": p.get('path', '/'), "headers": {"Host": p.get('host', '')}} if p.get('net') == 'ws' else {"type": "tcp"}
+                  })
+              elif p['protocol'] == 'vless':
+                  singbox_outbounds.append({
+                      "type": "vless",
+                      "tag": p.get('name', p['address']),
+                      "server": p['address'],
+                      "server_port": p['port'],
+                      "uuid": p['id'],
+                      "flow": p.get('flow', ''),
+                      "tls": {"enabled": p.get('security') == 'tls', "server_name": p.get('sni', '')}
+                  })
+              elif p['protocol'] == 'trojan':
+                  singbox_outbounds.append({
+                      "type": "trojan",
+                      "tag": p.get('name', p['address']),
+                      "server": p['address'],
+                      "server_port": p['port'],
+                      "password": p['password'],
+                      "tls": {"enabled": True, "server_name": p.get('sni', '')}
+                  })
+          singbox_config = {"outbounds": singbox_outbounds}
+          with open('singbox.json', 'w') as f:
+              json.dump(singbox_config, f, indent=2)
+
+          # 4. به‌روزرسانی README.md با جدول مارک‌داون
+          readme_content = "# V2Ray Active Configs\n\n"
+          readme_content += "Last update: " + time.strftime("%Y-%m-%d %H:%M:%S UTC") + "\n\n"
+          if fastest:
+              readme_content += "| Name | Protocol | Address | Latency (ms) |\n"
+              readme_content += "|------|----------|---------|--------------|\n"
+              for item in fastest:
+                  p = item['proxy']
+                  name = p.get('name', f"{p['address']}:{p['port']}")
+                  proto = p['protocol']
+                  addr = f"{p['address']}:{p['port']}"
+                  lat = item['latency']
+                  readme_content += f"| {name} | {proto} | {addr} | {lat} |\n"
+          else:
+              readme_content += "No active configs found.\n"
+          readme_content += "\n## Files\n- [active_configs.json](active_configs.json)\n- [clash.yaml](clash.yaml)\n- [singbox.json](singbox.json)\n"
+
+          with open('README.md', 'w') as f:
+              f.write(readme_content)
+
+          # commit و push تغییرات
+          os.system('git config user.name "github-actions[bot]"')
+          os.system('git config user.email "github-actions[bot]@users.noreply.github.com"')
+          os.system('git add README.md active_configs.json clash.yaml singbox.json')
+          os.system('git commit -m "Update active configs" || echo "No changes to commit"')
+          os.system('git push https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main')
+          EOF
+          
