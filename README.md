@@ -1,6 +1,6 @@
 # V2Ray Active Configs
 
-Last update: 2026-08-17 16:14:53 UTC
+Last update: 2026-08-17 17:17:32 UTC
 
 Source: [Vless.txt](https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Vless.txt)
 
